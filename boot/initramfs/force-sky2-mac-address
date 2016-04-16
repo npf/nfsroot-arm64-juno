@@ -1,4 +1,6 @@
 #!/bin/sh
+# Copyright 2016 Pierre Neyron <pierre.neyron@imag.fr>
+#
 # This script overcomes an issue with the Sky2 driver of Vanilla Linux kernel
 # (as of Linux 4.4.0), which does not understand the the sky2.mac_address
 # parameter.
