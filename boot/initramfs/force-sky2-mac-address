@@ -1,0 +1,76 @@
+#!/bin/sh
+# This script overcomes an issue with the Sky2 driver of Vanilla Linux kernel
+# (as of Linux 4.4.0), which does not understand the the sky2.mac_address
+# parameter.
+# The script sets the Sky2 NIC MAC address it retrieves from the
+# kernel command line, during the init-premount stage of the initramfs.
+# This script is to be copied to
+# /etc/initramfs-tools/scripts/init-premount/force-sky2-mac-address, then
+# update your initramfs.
+
+# no pre requirement
+PREREQ=""
+
+prereqs()
+{
+    echo "${PREREQ}"
+}
+
+case "$1" in
+    prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+. /scripts/functions
+
+MYTAG="Sky2-MAC-fixup"
+log_begin_msg "${MYTAG}: try and fix the Sky2 NIC MAC address\n"
+
+if ! dmesg | grep -q "sky2: driver version"; then
+  log_warning_msg "{$MYTAG}: no Sky2 NIC detected"
+  exit 0
+fi
+
+for param in $(cat /proc/cmdline); do
+  case ${param%%=*} in
+    sky2.mac_address)
+      sky2_mac_address_new=${param#*=}
+      ;;
+    ip)
+      iface=${param#*=}
+      ;;
+  esac
+done
+
+if [ -z "iface" ]; then
+  log_warning_msg "${MYTAG}: could not retrieve the NIC iface (no ip= ?) in kernel cmdline ?"
+  exit 0
+fi
+
+sky2_mac_address_current=$(ip link show $iface | grep "link/ether" | sed -e 's#^.\+link/ether \(.\+\) brd.\+$#\1#')
+
+if [ -z "$sky2_mac_address_current" ]; then
+  log_failure_msg "${MYTAG}: could not retrieve current MAC address for interface $iface"
+  exit 0
+fi
+
+if [ -z "$sky2_mac_address_new" ]; then
+  log_warning_msg "${MYTAG}: could not retrieve the new MAC address in kernel cmdline"
+  exit 0
+fi
+
+sky2_mac_address_new=${sky2_mac_address_new//0x/}
+sky2_mac_address_new=${sky2_mac_address_new//,/:}
+sky2_mac_address_new=$(echo $sky2_mac_address_new | tr A-Z a-z)                 
+ 
+if [ $sky2_mac_address_current == $sky2_mac_address_new ]; then
+  log_success_msg "${MYTAG}: MAC address is already set to $sky2_mac_address_new"
+  exit 0
+fi
+ 
+log_success_msg "${MYTAG}: forcing MAC address to $sky2_mac_address_new"
+ip link set $iface address $sky2_mac_address_new
+
+log_end_msg

@@ -1,0 +1,31 @@
+#
+# Exemple of boot script for a diskless boot of ARM Juno development board
+#
+
+#setenv kernel_version 4.3.0-1-arm64
+setenv kernel_version 4.3.0-digitalis3+
+#setenv kernel_version 4.4.0-trunk-arm64
+
+setenv linaro_version v2
+
+setenv nfsroot juno/nfsroot/debian-sid-arm64.alexis
+setenv fdt_name juno/bootloader/${linaro_version}/juno-r1.dtb
+
+setenv initrd_name ${nfsroot}/boot/u-initrd.img-${kernel_version}
+setenv kernel_name ${nfsroot}/boot/vmlinux-${kernel_version}
+#setenv initrd_name juno/bootloader/${linaro_version}/ramdisk.img
+#setenv kernel_name juno/bootloader/${linaro_version}/Image
+
+#setenv bootargs_debug break=premount debug=vc
+
+setenv iface enp8s0
+
+tftpboot ${kernel_addr} ${kernel_name}
+tftpboot ${initrd_addr} ${initrd_name}
+tftpboot ${fdt_addr} ${fdt_name}
+
+#setenv bootargs console=ttyAMA0,115200n8 root=/dev/nfs nfsroot=172.16.31.150:/srv/diskless/${nfsroot} ro rootwait earlycon=pl011,0x7ff80000 debug systemd.log_target=null user_debug=31 androidboot.hardware=juno loglevel=9 ${bootargs_sky2}
+setenv bootargs console=ttyAMA0,115200n8 ip=${iface} root=/dev/nfs nfsroot=172.16.31.150:/srv/diskless/${nfsroot} ro rootwait systemd.log_target=null user_debug=31 androidboot.hardware=juno loglevel=9 ${bootargs_sky2} ${bootargs_debug}
+
+booti ${kernel_addr} ${initrd_addr} ${fdt_addr}
+#bootz ${kernel_addr} ${initrd_addr} ${fdt_addr}

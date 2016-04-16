@@ -1,0 +1,289 @@
+#!/bin/sh
+#  Copyright, 2015 Pierre Neyron
+#
+#  Based on scrpts from
+#    Sebastian P.
+#    Nicholas A. Schembri State College PA USA
+#    Axel Heider
+#
+#  This program is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see
+#    <http://www.gnu.org/licenses/>.
+#
+#
+# Notes:
+#   * no changes to the root fs are made by this script. 
+#   * if /home/[user] is on the RO root fs, files are in ram and not saved.
+#
+# Install:
+#  put this file in /etc/initramfs-tools/scripts/init-bottom/root-overlay-squashfs-nfs
+#  chmod 0755 root-overlay-squashfs-nfs
+#  optional: clean up menu.lst, update-grub
+#  update-initramfs -u
+#
+# ROOT_RO_DRIVER variable controls which driver isused for the ro/rw layering
+#   Supported drivers are: overlay
+#  the kernel parameter "root-ro-driver=[driver]" can be used to initialize
+#  the variable ROOT_RO_DRIVER. If nothing is given, overlayfs is used.
+#
+
+# no pre requirement
+PREREQ=""
+
+prereqs()
+{
+    echo "${PREREQ}"
+}
+
+case "$1" in
+    prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+. /scripts/functions
+
+MYTAG="root-overlay-squashfs-nfs"
+
+# parse kernel boot command line 
+ROOT_RO_DRIVER=overlay
+SQSH_FILE=rootfs.sqsh
+for CMD_PARAM in $(cat /proc/cmdline); do 
+    case ${CMD_PARAM} in 
+        root-ro-driver=*)
+            ROOT_RO_DRIVER=${CMD_PARAM#root-ro-driver=}
+            ;;
+        sqsh-file=*)
+            SQSH_FILE=${CMD_PARAM#sqsh-file=}
+            ;;
+        sqsh-to-tmpfs)
+            SQSH_TO_TMPFS=1
+            ;;
+        no-overlay)
+            NO_OVERLAY=1
+            ;;
+    esac
+done
+
+# overlay is disabled if no-overlay is set in cmdline or if the /no-overlay file exists in the nfsroot directory
+if [ -n "${NO_OVERLAY}" -o -e ${rootmnt}/no-overlay ]; then
+    log_warning_msg "${MYTAG}: overlay is disabled."
+    exit 0
+fi
+
+# if not squashfs file found, falls back to using basic rw nfsroot
+if ! [ -n "${SQSH_FILE}" -a -e ${rootmnt}/${SQSH_FILE} ]; then
+    log_warning_msg "${MYTAG}: squashfs file not found (${rootmnt}/${SQSH_FILE}), overlay is disabled."
+    exit 0
+fi
+
+# generic settings 
+# ${ROOT} and ${rootmnt} are predefined by caller of this script. Note that
+# the root fs ${rootmnt} it mounted readonly on the initrams, which fits nicely
+# for our purposes.
+OVERLAY_NFS=/overlay/nfs
+OVERLAY_TMPFS=/overlay/tmpfs
+OVERLAY_SQSHFS=/overlay/sqshfs
+
+# settings based in ${ROOT_RO_DRIVER}, stop here if unsupported. 
+case ${ROOT_RO_DRIVER} in
+    overlay)
+        MOUNT_PARMS="-t overlay -o lowerdir=${OVERLAY_SQSHFS},upperdir=${OVERLAY_TMPFS}/upper,workdir=${OVERLAY_TMPFS}/workdir overlay ${rootmnt}"
+        ;;
+    *)
+        panic "${MYTAG} ERROR: invalide ROOT_RO_DRIVER ${ROOT_RO_DRIVER}"
+        ;;
+esac
+
+
+# check if kernel module squashfs exists
+modprobe -qb squashfs
+if [ $? -ne 0 ]; then
+    panic "${MYTAG} ERROR: missing kernel module squashfs"
+    exit 0
+fi
+
+modprobe -qb loop
+if [ $? -ne 0 ]; then
+    panic "${MYTAG} ERROR: missing kernel module loop"
+    exit 0
+fi
+
+# check if kernel module ROOT_RO_DRIVER exists
+modprobe -qb ${ROOT_RO_DRIVER}
+if [ $? -ne 0 ]; then
+    panic "${MYTAG} ERROR: missing kernel module ${ROOT_RO_DRIVER}"
+    exit 0
+fi
+
+# make the mount point on the init root fs ${MNT_NFS}
+[ -d ${OVERLAY_NFS} ] || mkdir -p ${OVERLAY_NFS}
+if [ $? -ne 0 ]; then
+    panic "${MYTAG} ERROR: failed to create ${OVERLAY_NFS}"
+    exit 0
+fi
+
+# make the mount point on the init root fs ${ROOT_RO}
+[ -d ${OVERLAY_SQSHFS} ] || mkdir -p ${OVERLAY_SQSHFS}
+if [ $? -ne 0 ]; then
+    panic "${MYTAG} ERROR: failed to create ${OVERLAY_SQSHFS}"
+    exit 0
+fi
+
+# make the mount point on the init root fs ${ROOT_RW}
+[ -d ${OVERLAY_TMPFS} ] || mkdir -p ${OVERLAY_TMPFS}
+if [ $? -ne 0 ]; then
+    panic "${MYTAG} ERROR: failed to create ${OVERLAY_TMPFS}"
+    exit 0
+fi
+
+# mount a tempfs using the device name tmpfs at ${ROOT_RW}
+mount -t tmpfs tmpfs ${OVERLAY_TMPFS}
+if [ $? -ne 0 ]; then
+    panic "${MYTAG} ERROR: failed to create tmpfs"
+    exit 0
+fi
+
+# make the mount point on the init root fs ${ROOT_RW}
+mkdir -p ${OVERLAY_TMPFS}/upper ${OVERLAY_TMPFS}/workdir
+if [ $? -ne 0 ]; then
+    panic "${MYTAG} ERROR: failed to create ${OVERLAY_TMPFS}/{upper,workdir}"
+    exit 0
+fi
+
+# root is mounted on ${rootmnt}, move it to ${ROOT_RO}.
+mount --move ${rootmnt} ${OVERLAY_NFS}
+if [ $? -ne 0 ]; then
+    panic "${MYTAG} ERROR: failed to move root away from ${rootmnt} to ${OVERLAY_NFS}"
+    exit 0
+fi
+
+SQSH_FILE_PATH=${OVERLAY_NFS}/${SQSH_FILE}
+# test if the squashfs rootfs is there
+if ! [ -r ${SQSH_FILE_PATH} ]; then
+    panic "${MYTAG} ERROR: could not find squashfs file ${SQSH_FILE_PATH}"
+    exit 0
+fi
+
+if [ -n "${SQSH_TO_TMPFS}" -o -e ${OVERLAY_NFS}/sqsh-to-tmpfs ]; then 
+    log_warning_msg "${MYTAG}: copy squashfs file to tmpfs, nfs will be umounted."
+    # copy squashfs file to tmpfs
+    cp ${SQSH_FILE_PATH} ${OVERLAY_TMPFS}
+    if [ $? -ne 0 ]; then
+        panic "${MYTAG} ERROR: failed to copy squashfs file to tmpfs"
+        exit 0
+    fi
+    SQSH_FILE_PATH=${OVERLAY_TMPFS}/${SQSH_FILE}
+fi
+
+# mount the squashfs root filesystem
+mount -t squashfs ${SQSH_FILE_PATH} ${OVERLAY_SQSHFS}
+if [ $? -ne 0 ]; then
+    panic "${MYTAG} ERROR: failed to mount squashfs file ${SQSH_FILE_PATH} to ${OVERLAY_SQSHFS}"
+    exit 0
+fi
+
+# mount overlay
+mount ${MOUNT_PARMS}
+if [ $? -ne 0 ]; then
+    panic "${MYTAG} ERROR: failed to create new ro/rw layerd ${rootmnt}"
+    exit 0
+fi
+
+# now the real root fs is on ${ROOT_RO} of the init file system, our layered
+# root fs is set up at ${rootmnt}. So we can write anywhere in {rootmnt} and the
+# changes will end up in ${ROOT_RW} while ${ROOT_RO} it not touched. However 
+# ${ROOT_RO} and ${ROOT_RW} are on the initramfs root fs, which will be removed
+# an replaced by ${rootmnt}. Thus we must move ${ROOT_RO} and ${ROOT_RW} to the
+# rootfs visible later, ie. ${rootmnt}${ROOT_RO} and ${rootmnt}${ROOT_RO}.
+# Since the layered ro/rw is already up, these changes also end up on 
+# ${ROOT_RW} while ${ROOT_RO} is not touched.
+
+if [ -n "${SQSH_TO_TMPFS}" -o -e ${OVERLAY_NFS}/sqsh-to-tmpfs ]; then 
+    # nfs mount is not needed anymore
+    umount ${OVERLAY_NFS}
+    if [ $? -ne 0 ]; then
+        panic "${MYTAG} ERROR: failed to umount nfs"
+        exit 0
+    fi
+else
+    # move mount from ${OVERLAY_NFS} to ${rootmnt}${OVERLAY_NFS} 
+    [ -d ${rootmnt}${OVERLAY_NFS} ] || mkdir -p ${rootmnt}${OVERLAY_NFS}
+    mount --move ${OVERLAY_NFS} ${rootmnt}${OVERLAY_NFS}
+    if [ $? -ne 0 ]; then
+        panic "${MYTAG} ERROR: failed to move ${OVERLAY_NFS} to ${rootmnt}${OVERLAY_NFS}"
+        exit 0
+    fi
+fi
+
+# move mount from ${OVERLAY_SQSH} to ${rootmnt}${OVERLAY_SQSHFS} 
+[ -d ${rootmnt}${OVERLAY_SQSHFS} ] || mkdir -p ${rootmnt}${OVERLAY_SQSHFS}
+mount --move ${OVERLAY_SQSHFS} ${rootmnt}${OVERLAY_SQSHFS}
+if [ $? -ne 0 ]; then
+    panic "${MYTAG} ERROR: failed to move ${OVERLAY_SQSHFS} to ${rootmnt}${OVERLAY_SQSHFS}"
+    exit 0
+fi
+
+
+# move mount from ${OVERLAY_TMPFS} to ${rootmnt}${OVERLAY_TMPFS} 
+[ -d ${rootmnt}${OVERLAY_TMPFS} ] || mkdir -p ${rootmnt}${OVERLAY_TMPFS}
+mount --move ${OVERLAY_TMPFS} ${rootmnt}${OVERLAY_TMPFS}
+if [ $? -ne 0 ]; then
+    panic "${MYTAG}: ERROR: failed to move ${OVERLAY_TMPFS} to ${rootmnt}${OVERLAY_TMPFS}"
+    exit 0
+fi
+
+
+# technically, everything is set up nicely now. Since ${rootmnt} had beend 
+# mounted read-only on the initfamfs already, ${rootmnt}${ROOT_RO} is it, too.
+# Now we init process could run - but unfortunately, we may have to prepare 
+# some more things here. 
+# Basically, there are two ways to deal with the read-only root fs. If the 
+# system is made aware of this, things can be simplified a lot.
+# If it is not, things need to be done to our best knowledge. 
+#
+# So we assume here, the system does not really know about our read-only root fs.
+#
+# Let's deal with /etc/fstab first. It usually contains an entry for the root 
+# fs, which is no longer valid now. We have to remove it and add our new 
+# ${ROOT_RO} entry. 
+# Remember we are still on the initramfs root fs here, so we have to work on
+# ${rootmnt}/etc/fstab. The original fstab is ${rootmnt}${ROOT_RO}/etc/fstab.
+ROOT_TYPE=$(cat /proc/mounts | grep ${ROOT} | cut -d' ' -f3)
+ROOT_OPTIONS=$(cat /proc/mounts | grep ${ROOT} | cut -d' ' -f4)
+cat <<EOF >${rootmnt}/etc/fstab
+#
+#  This fstab is in RAM, the real one can be found at ${OVERLAY_SQSHFS}/etc/fstab
+#  The original entry for '/' and all swap files have been removed.
+#
+
+EOF
+if [ $? -ne 0 ]; then
+    log_failure_msg "${MYTAG} ERROR: failed to modify /etc/fstab (step 1)"
+    #exit 0
+fi
+
+#remove root entry and swap from fstab
+cat ${rootmnt}${OVERLAY_SQSHFS}/etc/fstab | grep -v ' / ' | grep -v swap >>${rootmnt}/etc/fstab
+if [ $? -ne 0 ]; then
+    log_failure_msg "${MYTAG} ERROR: failed to modify etc/fstab (step 2)"
+    #exit 0
+fi
+
+# now we are done. Additinal steps may be necessary depending on the actualy
+# distribution and/or its configuration. 
+
+log_success_msg "${MYTAG} sucessfully set up squashfs/tmpfs-rw layered root fs using ${ROOT_RO_DRIVER}"
+
+exit 0 

@@ -1,0 +1,26 @@
+#!/bin/bash
+# This script is a hook for Debian to generate the u-initrd and vmlinux for
+# U-Boot.
+# The file is to be copied to /etc/kernel/postinst.d/ in the ARM64 system.
+
+version=$1
+vmlinuz=$2
+
+initrd=/boot/initrd.img-$version
+uinitrd=/boot/u-initrd.img-$version
+
+target="${2/vmlinuz/vmlinux}"
+echo >&2 "Creating $target..."
+
+case "$(file "$2")" in
+*"gzip compressed data"*)
+	zcat "$2" > "${2/vmlinuz/vmlinux}"
+	echo >&2 "...$2 uncompressed." ;;
+*)
+	ln -sf "${2##*/}" "${2/vmlinuz/vmlinux}"
+	echo >&2 "...$2 linked." ;;
+esac
+
+echo >&2 "mkimage: generating u-boot $uinitrd..."
+
+mkimage -A arm64 -O linux -T ramdisk -C gzip -a 0x84000000 -e 0x84000000 -d $initrd -n "$initrd" $uinitrd
